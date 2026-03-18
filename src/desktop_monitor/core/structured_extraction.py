@@ -243,7 +243,10 @@ def validate_structured_payload(payload: dict[str, Any], validation_config: dict
         for field_name, expected_type in field_types.items():
             if field_name not in payload:
                 continue
-            if not matches_expected_type(payload.get(field_name), str(expected_type)):
+            value = payload.get(field_name)
+            if value is None:
+                continue
+            if not matches_expected_type(value, str(expected_type)):
                 errors.append(f"Field [{field_name}] does not match expected type {expected_type}")
 
     regex_rules = validation_config.get("regex_rules", {})
@@ -278,6 +281,9 @@ def validate_structured_payload(payload: dict[str, Any], validation_config: dict
 
 
 def matches_expected_type(value: Any, expected_type: str) -> bool:
+    if value is None:
+        return True
+
     normalized = expected_type.strip().lower()
     if normalized == "string":
         return isinstance(value, str)

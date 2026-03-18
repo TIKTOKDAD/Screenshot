@@ -43,7 +43,6 @@ class MonitorWorker(QObject):
             except Exception as exc:
                 message = f"采集失败: {exc}"
                 self.error.emit(self.job.job_id, message)
-                self.log.emit(self.job.job_id, message)
 
             next_run = started + self.job.interval_seconds
             while self._running and time.time() < next_run:

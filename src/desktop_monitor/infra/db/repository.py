@@ -154,7 +154,35 @@ class SqlAlchemyMappedRepository:
         payload: dict[str, Any] = {}
         for mapping in self.mappings:
             payload[mapping.db_column] = self._resolve_mapping_value(mapping, output)
+        self._fill_required_defaults(payload)
         return payload
+
+    def _fill_required_defaults(self, payload: dict[str, Any]) -> None:
+        for column in self.table.columns:
+            if column.nullable:
+                continue
+            name = str(column.name)
+            if payload.get(name) is not None:
+                continue
+            payload[name] = self._default_value_for_column(column)
+
+    @staticmethod
+    def _default_value_for_column(column: Column[Any]) -> Any:
+        if str(column.name) == "id":
+            return int(datetime.now().timestamp() * 1_000_000)
+
+        col_type = column.type
+        if isinstance(col_type, DateTime):
+            return datetime.now()
+        if isinstance(col_type, Integer):
+            return 0
+        if isinstance(col_type, Float):
+            return 0.0
+        if isinstance(col_type, Boolean):
+            return False
+        if isinstance(col_type, JSON):
+            return {}
+        return ""
 
     def _resolve_mapping_value(self, mapping: DbFieldMapping, output: PipelineOutput) -> Any:
         if mapping.source_type == "parsed":

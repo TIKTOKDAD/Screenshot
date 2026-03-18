@@ -26,6 +26,7 @@ from PIL import Image
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
+    QDialog,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -148,7 +149,9 @@ class MainWindow(QMainWindow):
             "save_ai_profile_btn": "保存AI配置",
             "load_ai_profile_btn": "加载AI配置",
             "sample_batch_btn": "执行一次采样并生成字段草案",
-            "create_table_btn": "创建数据表并回填提示词/规则",
+            "ai_prompt_backfill_btn": "基于启用字段执行AI提示词回填",
+            "create_table_btn": "创建数据表",
+            "expand_schema_table_btn": "放大查看字段表",
             "precheck_btn": "执行环境自检",
             "gateway_test_btn": "测试AI网关",
             "ai_probe_test_btn": "执行AI测试",
@@ -661,13 +664,21 @@ class MainWindow(QMainWindow):
 
         wizard_actions = QHBoxLayout()
         self.sample_batch_btn = QPushButton("采 1 次样本")
+        self.ai_prompt_backfill_btn = QPushButton("AI回填提示词")
         self.create_table_btn = QPushButton("创建数据表")
+        self.expand_schema_table_btn = QPushButton("放大查看字段表")
         self._set_button_variant(self.sample_batch_btn, "secondary")
+        self._set_button_variant(self.ai_prompt_backfill_btn, "secondary")
         self._set_button_variant(self.create_table_btn, "success")
+        self._set_button_variant(self.expand_schema_table_btn, "secondary")
         self.sample_batch_btn.clicked.connect(self.generate_samples_and_schema)
+        self.ai_prompt_backfill_btn.clicked.connect(self.backfill_prompt_from_schema)
         self.create_table_btn.clicked.connect(self.create_table_from_schema)
+        self.expand_schema_table_btn.clicked.connect(self.open_schema_table_zoom)
         wizard_actions.addWidget(self.sample_batch_btn)
+        wizard_actions.addWidget(self.ai_prompt_backfill_btn)
         wizard_actions.addWidget(self.create_table_btn)
+        wizard_actions.addWidget(self.expand_schema_table_btn)
         wizard_actions.addStretch(1)
 
         self.schema_table = QTableWidget(0, 8)
@@ -855,7 +866,9 @@ class MainWindow(QMainWindow):
             "parse_test_btn",
             "db_test_btn",
             "sample_batch_btn",
+            "ai_prompt_backfill_btn",
             "create_table_btn",
+            "expand_schema_table_btn",
         ]:
             if hasattr(self, name):
                 getattr(self, name).setEnabled(enabled)
@@ -1125,6 +1138,69 @@ class MainWindow(QMainWindow):
                 }
             )
         self.sample_results_text.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def open_schema_table_zoom(self) -> None:
+        if self.schema_table.rowCount() <= 0:
+            QMessageBox.information(self, "提示", "当前没有可放大查看的字段草案。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("字段草案（放大查看）")
+        dialog.resize(1280, 760)
+
+        root = QVBoxLayout(dialog)
+        hint = QLabel("此视图用于放大查看字段草案。请在主表中进行编辑。")
+        hint.setObjectName("sectionHint")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        zoom_table = QTableWidget(self.schema_table.rowCount(), self.schema_table.columnCount(), dialog)
+        zoom_table.setHorizontalHeaderLabels(
+            [self.schema_table.horizontalHeaderItem(i).text() for i in range(self.schema_table.columnCount())]
+        )
+        zoom_table.verticalHeader().setVisible(False)
+        zoom_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        zoom_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        zoom_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+
+        header = zoom_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+
+        for row in range(self.schema_table.rowCount()):
+            for col in range(self.schema_table.columnCount()):
+                source_item = self.schema_table.item(row, col)
+                if source_item is not None:
+                    clone = QTableWidgetItem(source_item.text())
+                    clone.setFlags(clone.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    if source_item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                        clone.setFlags(clone.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        clone.setCheckState(source_item.checkState())
+                    zoom_table.setItem(row, col, clone)
+                    continue
+
+                source_widget = self.schema_table.cellWidget(row, col)
+                if isinstance(source_widget, QComboBox):
+                    text_item = QTableWidgetItem(source_widget.currentText())
+                    text_item.setFlags(text_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                    zoom_table.setItem(row, col, text_item)
+
+        root.addWidget(zoom_table, 1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        close_row.addWidget(close_btn)
+        root.addLayout(close_row)
+
+        dialog.exec()
 
     def refresh_windows(self) -> None:
         previous_hwnd = self.window_combo.currentData() if hasattr(self, "window_combo") else 0
@@ -1788,16 +1864,6 @@ class MainWindow(QMainWindow):
             db_url = self.db_url_edit.text().strip() or "sqlite:///../../data/monitor.db"
             manager = SqlAlchemySchemaManager(db_url)
             description = manager.create_table(table_name, drafts)
-
-            try:
-                recommended_prompt = self._recommend_user_prompt_via_ai(job, drafts)
-            except Exception as prompt_exc:
-                self._append_log(f"提示词智能回填失败，已回退本地规则：{prompt_exc}")
-                self._apply_auto_prompt_keywords(drafts)
-            else:
-                self._apply_ai_recommended_prompt(recommended_prompt)
-                self._append_log("已基于启用字段调用模型生成提取提示词并合并回填。")
-
             self._apply_auto_validation_rules(drafts)
 
             job.ai_config.user_prompt = self.user_prompt_edit.toPlainText().strip() or DEFAULT_AI_USER_PROMPT
@@ -1822,8 +1888,54 @@ class MainWindow(QMainWindow):
             return
 
         self._append_log(f"已创建数据表：{table_name}")
-        self._append_log("已自动保存任务配置，后续自动化识别将使用当前完整提示词。")
+        self._append_log("已自动保存任务配置。")
         QMessageBox.information(self, "提示", f"数据表 {table_name} 已创建。")
+
+    def backfill_prompt_from_schema(self) -> None:
+        try:
+            selected_job_id = str(self.sample_job_combo.currentData() or "").strip() if hasattr(self, "sample_job_combo") else ""
+            if not selected_job_id:
+                raise ValueError("请先在一次采样建表中选择任务配置。")
+
+            job = self._jobs.get(selected_job_id)
+            if job is None:
+                raise ValueError("所选任务配置不存在，请先保存任务后再回填提示词。")
+
+            all_drafts = self._collect_schema_drafts()
+            drafts = [draft for draft in all_drafts if draft.include]
+            if not drafts:
+                raise ValueError("请先勾选至少一个字段草案。")
+
+            drafts_snapshot = list(drafts)
+            sample_snapshot = list(self._latest_sample_results)
+
+            self._load_job_into_editor(job)
+            self._populate_schema_drafts(drafts_snapshot)
+            if sample_snapshot:
+                self._show_sample_results(sample_snapshot)
+
+            try:
+                recommended_prompt = self._recommend_user_prompt_via_ai(job, drafts)
+            except Exception as prompt_exc:
+                self._append_log(f"提示词智能回填失败，已回退本地规则：{prompt_exc}")
+                self._apply_auto_prompt_keywords(drafts)
+            else:
+                self._apply_ai_recommended_prompt(recommended_prompt)
+                self._append_log("已基于启用字段调用模型生成提取提示词并合并回填。")
+
+            self._apply_auto_validation_rules(drafts)
+            job.ai_config.user_prompt = self.user_prompt_edit.toPlainText().strip() or DEFAULT_AI_USER_PROMPT
+            job.ai_config.validation_rules_text = self.validation_rules_edit.toPlainText().strip()
+            self._jobs[job.job_id] = job
+            self._refresh_jobs_table(select_job_id=job.job_id)
+            self._persist_settings_silent()
+        except Exception as exc:
+            self._append_log(f"AI回填提示词失败：{exc}")
+            self._show_validation_error("AI回填提示词失败", str(exc))
+            return
+
+        self._append_log("已自动保存任务配置，后续自动化识别将使用当前完整提示词。")
+        QMessageBox.information(self, "提示", "AI 提示词回填完成。")
 
     def _apply_auto_prompt_keywords(self, drafts: list[SchemaFieldDraft]) -> None:
         keywords = [draft.source_key.strip() for draft in drafts if draft.source_key.strip()]
@@ -2405,6 +2517,14 @@ class MainWindow(QMainWindow):
             if db_column in table_columns and db_column not in used_columns:
                 mappings.append(DbFieldMapping(source_type="parsed", source_key=source_key, db_column=db_column))
                 used_columns.add(db_column)
+
+        # Fallback: when draft context is unavailable (e.g. app restart),
+        # map remaining business columns by same-name from parsed JSON.
+        for column_name in sorted(table_columns):
+            if column_name in used_columns:
+                continue
+            mappings.append(DbFieldMapping(source_type="parsed", source_key=column_name, db_column=column_name))
+            used_columns.add(column_name)
 
         job.mappings = mappings
 
