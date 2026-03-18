@@ -1,0 +1,27 @@
+﻿[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "desktop-monitor-pipeline"
+version = "0.1.0"
+description = "Desktop window monitor with AI extraction and database upload."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "PySide6>=6.7.0",
+    "pygetwindow>=0.0.9",
+    "pywin32>=306; platform_system == 'Windows'",
+    "mss>=9.0.1",
+    "Pillow>=10.4.0",
+    "SQLAlchemy>=2.0.30",
+]
+
+[project.scripts]
+desktop-monitor = "desktop_monitor.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
