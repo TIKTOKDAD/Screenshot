@@ -148,6 +148,10 @@ class MainWindow(QMainWindow):
         self._syncing_job_table = False
         self._latest_sample_results: list[SampleExtractionResult] = []
         self._latest_schema_drafts: list[SchemaFieldDraft] = []
+        self._job_sample_results: dict[str, list[SampleExtractionResult]] = {}
+        self._job_schema_drafts: dict[str, list[SchemaFieldDraft]] = {}
+        self._job_schema_locked: dict[str, bool] = {}
+        self._schema_locked_ui = False
 
         self._build_ui()
         self._apply_compact_ui_if_needed()
@@ -1072,11 +1076,15 @@ class MainWindow(QMainWindow):
         self.schema_table.insertRow(row)
 
         is_fixed_id = draft.source_key == "record_id_ts" and draft.column_name == "id"
+        schema_locked = bool(self._schema_locked_ui)
 
         include_item = QTableWidgetItem()
         if is_fixed_id:
             include_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsSelectable)
             include_item.setCheckState(Qt.CheckState.Checked)
+        elif schema_locked:
+            include_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            include_item.setCheckState(Qt.CheckState.Checked if draft.include else Qt.CheckState.Unchecked)
         else:
             include_item.setFlags(include_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             include_item.setCheckState(Qt.CheckState.Checked if draft.include else Qt.CheckState.Unchecked)
@@ -1086,7 +1094,7 @@ class MainWindow(QMainWindow):
         source_item = QTableWidgetItem(source_text)
         column_item = QTableWidgetItem(draft.column_name)
         json_type_item = QTableWidgetItem(draft.json_type)
-        if is_fixed_id:
+        if is_fixed_id or schema_locked:
             source_item.setFlags(source_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             column_item.setFlags(column_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             json_type_item.setFlags(json_type_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1098,7 +1106,7 @@ class MainWindow(QMainWindow):
         type_combo = QComboBox()
         type_combo.addItems(["TEXT", "INTEGER", "FLOAT", "BOOLEAN", "DATETIME", "JSON"])
         type_combo.setCurrentText(draft.db_type)
-        if is_fixed_id:
+        if is_fixed_id or schema_locked:
             type_combo.setEnabled(False)
         self.schema_table.setCellWidget(row, 4, type_combo)
 
@@ -1106,6 +1114,9 @@ class MainWindow(QMainWindow):
         if is_fixed_id:
             nullable_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             nullable_item.setCheckState(Qt.CheckState.Unchecked)
+        elif schema_locked:
+            nullable_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            nullable_item.setCheckState(Qt.CheckState.Checked if draft.nullable else Qt.CheckState.Unchecked)
         else:
             nullable_item.setFlags(nullable_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             nullable_item.setCheckState(Qt.CheckState.Checked if draft.nullable else Qt.CheckState.Unchecked)
@@ -1334,6 +1345,9 @@ class MainWindow(QMainWindow):
             return
 
         self._jobs.pop(job_id, None)
+        self._job_sample_results.pop(job_id, None)
+        self._job_schema_drafts.pop(job_id, None)
+        self._job_schema_locked.pop(job_id, None)
         self._last_pixmaps.pop(job_id, None)
         self._last_image_paths.pop(job_id, None)
         self._preview_raw_baseline.pop(job_id, None)
@@ -1859,9 +1873,13 @@ class MainWindow(QMainWindow):
             last_image_path = str(result.get("last_image_path", ""))
             last_raw_text = str(result.get("last_raw_text", ""))
 
+            self._job_schema_locked[job.job_id] = False
+            self._schema_locked_ui = False
             self._latest_sample_results = samples
+            self._job_sample_results[job.job_id] = list(samples)
             self._show_sample_results(samples)
             self._populate_schema_drafts(drafts)
+            self._job_schema_drafts[job.job_id] = [self._clone_schema_draft(draft) for draft in self._latest_schema_drafts]
             if last_image_path:
                 self._show_capture_result(job, last_image_path)
             if last_raw_text:
@@ -1898,15 +1916,17 @@ class MainWindow(QMainWindow):
             if not drafts:
                 raise ValueError("请先勾选至少一个字段草案。")
 
-            # 回填界面仅保留勾选字段，避免未启用字段影响后续建表调整。
+            # 创建表后，当前任务草案视图定版为“已启用字段”，与正式表结构保持一致。
             drafts_snapshot = list(drafts)
             sample_snapshot = list(self._latest_sample_results)
 
             # Align editor fields with the selected task for predictable backfill behavior.
             self._load_job_into_editor(job)
             self._populate_schema_drafts(drafts_snapshot)
+            self._job_schema_drafts[job.job_id] = [self._clone_schema_draft(draft) for draft in self._latest_schema_drafts]
             if sample_snapshot:
                 self._show_sample_results(sample_snapshot)
+                self._job_sample_results[job.job_id] = list(sample_snapshot)
 
             db_url = self.db_url_edit.text().strip() or "sqlite:///../../data/monitor.db"
             manager = SqlAlchemySchemaManager(db_url)
@@ -1953,13 +1973,15 @@ class MainWindow(QMainWindow):
             if not drafts:
                 raise ValueError("请先勾选至少一个字段草案。")
 
-            drafts_snapshot = list(drafts)
+            drafts_snapshot = list(all_drafts)
             sample_snapshot = list(self._latest_sample_results)
 
             self._load_job_into_editor(job)
             self._populate_schema_drafts(drafts_snapshot)
+            self._job_schema_drafts[job.job_id] = [self._clone_schema_draft(draft) for draft in self._latest_schema_drafts]
             if sample_snapshot:
                 self._show_sample_results(sample_snapshot)
+                self._job_sample_results[job.job_id] = list(sample_snapshot)
 
             try:
                 recommended_prompt = self._recommend_user_prompt_via_ai(job, drafts)
@@ -1973,6 +1995,13 @@ class MainWindow(QMainWindow):
             self._apply_auto_validation_rules(drafts)
             job.ai_config.user_prompt = self.user_prompt_edit.toPlainText().strip() or DEFAULT_AI_USER_PROMPT
             job.ai_config.validation_rules_text = self.validation_rules_edit.toPlainText().strip()
+
+            self._job_schema_locked[job.job_id] = True
+            self._schema_locked_ui = True
+            locked_snapshot = self._collect_schema_drafts()
+            self._populate_schema_drafts(locked_snapshot)
+            self._job_schema_drafts[job.job_id] = [self._clone_schema_draft(draft) for draft in self._latest_schema_drafts]
+
             self._jobs[job.job_id] = job
             self._refresh_jobs_table(select_job_id=job.job_id)
             self._persist_settings_silent()
@@ -1981,7 +2010,7 @@ class MainWindow(QMainWindow):
             self._show_validation_error("AI回填提示词失败", str(exc))
             return
 
-        self._append_log("已自动保存任务配置，后续自动化识别将使用当前完整提示词。")
+        self._append_log("已自动保存任务配置，当前任务草案已锁定（启用/结构不可再编辑）。")
         QMessageBox.information(self, "提示", "AI 提示词回填完成。")
 
     def _apply_auto_prompt_keywords(self, drafts: list[SchemaFieldDraft]) -> None:
@@ -2203,6 +2232,22 @@ class MainWindow(QMainWindow):
                 job.job_id = jid
             unique_jobs[jid] = job
         self._jobs = unique_jobs
+        valid_ids = set(self._jobs.keys())
+        self._job_sample_results = {
+            job_id: value
+            for job_id, value in self._job_sample_results.items()
+            if job_id in valid_ids
+        }
+        self._job_schema_drafts = {
+            job_id: value
+            for job_id, value in self._job_schema_drafts.items()
+            if job_id in valid_ids
+        }
+        self._job_schema_locked = {
+            job_id: value
+            for job_id, value in self._job_schema_locked.items()
+            if job_id in valid_ids
+        }
 
         selected_job_id = next(iter(self._jobs.keys()), None)
         self._refresh_jobs_table(select_job_id=selected_job_id)
@@ -2266,6 +2311,10 @@ class MainWindow(QMainWindow):
         self._append_log(f"任务状态已更新: {self._job_tag(job_id)} -> {'启用' if job.enabled else '禁用'}")
 
     def _on_job_selection_changed(self) -> None:
+        previous_job_id = self._editing_job_id
+        if previous_job_id and previous_job_id in self._jobs:
+            self._cache_schema_state_for_job(previous_job_id)
+
         job_id = self._selected_job_id()
         if not job_id:
             return
@@ -2318,6 +2367,7 @@ class MainWindow(QMainWindow):
 
     def _load_job_into_editor(self, job: MonitorJob) -> None:
         self._editing_job_id = job.job_id
+        self._schema_locked_ui = bool(self._job_schema_locked.get(job.job_id, False))
         self.job_id_label.setText(job.job_id)
         self.job_name_edit.setText(job.name)
         self.job_enabled_check.setChecked(job.enabled)
@@ -2333,6 +2383,17 @@ class MainWindow(QMainWindow):
 
         self.schema_table.setRowCount(0)
         self.sample_results_text.clear()
+
+        job_drafts = self._job_schema_drafts.get(job.job_id, [])
+        if job_drafts:
+            self._populate_schema_drafts([self._clone_schema_draft(draft) for draft in job_drafts])
+
+        job_samples = self._job_sample_results.get(job.job_id, [])
+        if job_samples:
+            self._latest_sample_results = list(job_samples)
+            self._show_sample_results(job_samples)
+        else:
+            self._latest_sample_results = []
 
         self._pending_window_hwnd = job.window_hwnd or None
         idx = self.window_combo.findData(job.window_hwnd)
@@ -2361,10 +2422,34 @@ class MainWindow(QMainWindow):
         self.parsed_text.clear()
         self._latest_sample_results = []
         self._latest_schema_drafts = []
+        self._schema_locked_ui = False
         self._editor_crop_rect = None
         self._editor_mark_rects = []
         self._update_capture_adjustment_summary()
         self._update_parse_mode_ui()
+
+    def _cache_schema_state_for_job(self, job_id: str) -> None:
+        if not job_id:
+            return
+        try:
+            drafts = self._collect_schema_drafts()
+        except Exception:
+            return
+        if drafts:
+            self._job_schema_drafts[job_id] = [self._clone_schema_draft(draft) for draft in drafts]
+
+    @staticmethod
+    def _clone_schema_draft(draft: SchemaFieldDraft) -> SchemaFieldDraft:
+        return SchemaFieldDraft(
+            source_key=draft.source_key,
+            column_name=draft.column_name,
+            json_type=draft.json_type,
+            db_type=draft.db_type,
+            nullable=draft.nullable,
+            include=draft.include,
+            sample_value=draft.sample_value,
+            present_count=draft.present_count,
+        )
 
     def _collect_job_from_editor(self, require_window: bool, require_storage: bool = True) -> MonitorJob:
         job_id = self._editing_job_id or create_job_id()
