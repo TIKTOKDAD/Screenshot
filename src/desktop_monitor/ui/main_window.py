@@ -26,6 +26,7 @@ from PIL import Image
 from PySide6.QtCore import QObject, QPoint, QRect, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QCheckBox,
     QComboBox,
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -103,7 +105,20 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("桌面数据监控器")
-        self.resize(1460, 920)
+        self.setMinimumSize(980, 620)
+        self._compact_ui = False
+
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            self._compact_ui = available.height() <= 800
+            target_w = min(1460, max(980, available.width() - 40))
+            target_h = min(920, max(620, available.height() - 60))
+            target_w = min(target_w, available.width())
+            target_h = min(target_h, available.height())
+            self.resize(target_w, target_h)
+        else:
+            self.resize(1460, 920)
 
         self.window_service = WindowService()
         self.config_store = ConfigStore()
@@ -135,9 +150,28 @@ class MainWindow(QMainWindow):
         self._latest_schema_drafts: list[SchemaFieldDraft] = []
 
         self._build_ui()
+        self._apply_compact_ui_if_needed()
         self._wire_operation_click_logs()
         self.refresh_windows()
         self._load_settings_on_startup()
+
+    def _apply_compact_ui_if_needed(self) -> None:
+        if not self._compact_ui:
+            return
+
+        if hasattr(self, "system_prompt_edit"):
+            self.system_prompt_edit.setMinimumHeight(72)
+        if hasattr(self, "user_prompt_edit"):
+            self.user_prompt_edit.setMinimumHeight(86)
+        if hasattr(self, "output_schema_edit"):
+            self.output_schema_edit.setMinimumHeight(90)
+        if hasattr(self, "validation_rules_edit"):
+            self.validation_rules_edit.setMinimumHeight(90)
+        if hasattr(self, "preview_label"):
+            self.preview_label.setMinimumHeight(180)
+
+        if hasattr(self, "_main_splitter"):
+            self._main_splitter.setSizes([760, 430])
 
     def _wire_operation_click_logs(self) -> None:
         button_ops = {
@@ -184,8 +218,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(14, 14, 14, 14)
-        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(10, 10, 10, 10)
+        root_layout.setSpacing(8)
 
         header_layout = QHBoxLayout()
         header_text_layout = QVBoxLayout()
@@ -209,10 +243,23 @@ class MainWindow(QMainWindow):
         root_layout.addLayout(header_layout)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self._build_left_panel())
-        splitter.addWidget(self._build_right_panel())
-        splitter.setSizes([780, 680])
+        splitter.setChildrenCollapsible(False)
+        splitter.addWidget(self._wrap_panel_with_scroll(self._build_left_panel()))
+        splitter.addWidget(self._wrap_panel_with_scroll(self._build_right_panel()))
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([900, 560])
+        self._main_splitter = splitter
         root_layout.addWidget(splitter, 1)
+
+    @staticmethod
+    def _wrap_panel_with_scroll(panel: QWidget) -> QScrollArea:
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        area.setWidget(panel)
+        return area
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
